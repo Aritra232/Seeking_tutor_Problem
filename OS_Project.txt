@@ -1,0 +1,239 @@
+#include<stdio.h>
+#include<stdlib.h>
+#include<assert.h>
+#include<string.h>
+#include<pthread.h>
+#include<semaphore.h>
+#include<unistd.h>
+#define Max_stu_size 2000
+int Fin=0;
+int ReqSum=0;
+int SessSum=0;
+int tutorSum=0;
+int StuNum=0;
+int tutorNum=0;
+int help=0;
+int EChair=0;
+int OChair=0;
+int newQueue[Max_stu_size];
+int TutorQueue[Max_stu_size];
+int priorityQueue[Max_stu_size][2];
+int StuPriQueue[Max_stu_size];
+int StuID[Max_stu_size];
+int TutorID[Max_stu_size];
+sem_t sem_student;
+sem_t sem_coordinator;
+pthread_mutex_t seatLock;
+pthread_mutex_t queueLock;
+pthread_mutex_t TutorQueueLock;
+
+void *StudentThread(void *student_id)
+{
+    int id_student=*(int*)student_id;
+
+    while(1)
+    {
+        if(StuPriQueue[id_student-1]>=help)
+        {
+
+            pthread_mutex_lock(&seatLock);
+            Fin++;
+            pthread_mutex_unlock(&seatLock);
+
+            sem_post(&sem_student);
+
+            printf("........student has %d terminated.......\n",id_student);
+            pthread_exit(NULL);
+        }
+        float programTime=(float)(rand()%200)/100;
+        printf("sleep time = %f.\n", programTime);
+        usleep(programTime);
+        pthread_mutex_lock(&seatLock);
+        if(OChair>=EChair)
+        {
+            printf("Student-\n");
+            printf("Student %d found no empty chair. He/She Will try again later.\n",id_student);
+            pthread_mutex_unlock(&seatLock);
+            continue;
+        }
+        OChair++;
+        ReqSum++;
+        newQueue[id_student-1]=ReqSum;
+        printf("Student- Student %d takes a seat. Avaliable chairs = %d\n",id_student,EChair-OChair);
+        pthread_mutex_unlock(&seatLock);
+        sem_post(&sem_student);
+        while(TutorQueue[id_student-1]==-1);
+        printf("Student- Student %d has received help from Tutor %d.\n",id_student,TutorQueue[id_student-1]-StuNum);
+        pthread_mutex_lock(&TutorQueueLock);
+        TutorQueue[id_student-1]=-1;
+        pthread_mutex_unlock(&TutorQueueLock);
+        pthread_mutex_lock(&seatLock);
+        StuPriQueue[id_student-1]++;
+        pthread_mutex_unlock(&seatLock);
+    }
+}
+
+void *TutorThread(void *tutor_id)
+{
+    int id_tutor=*(int*)tutor_id;
+    int studentTutoredTimes;
+    int studentSequence;
+    int id_student;
+
+    while(1)
+    {
+        if(Fin==StuNum)
+        {
+            printf("........ tutor %d  has terminated ...... \n",id_tutor);
+            pthread_exit(NULL);
+        }
+
+        studentTutoredTimes=help-1;
+        studentSequence=StuNum*help+1;
+        id_student=-1;
+
+        sem_wait(&sem_coordinator);
+
+        pthread_mutex_lock(&seatLock);
+
+        int i;
+        for(i=0; i<StuNum; i++)
+        {
+            if(priorityQueue[i][0]>-1 && priorityQueue[i][0]<=studentTutoredTimes
+                    && priorityQueue[i][1]<studentSequence)
+            {
+                studentTutoredTimes=priorityQueue[i][0];
+                studentSequence=priorityQueue[i][1];
+                id_student=StuID[i];
+            }
+        }
+
+        if(id_student==-1)
+        {
+            pthread_mutex_unlock(&seatLock);
+            continue;
+        }
+
+        priorityQueue[id_student-1][0]=-1;
+        priorityQueue[id_student-1][1]=-1;
+
+        OChair--;
+        tutorSum++;
+        pthread_mutex_unlock(&seatLock);
+
+
+        float tutorTime=(float)(rand()%200)/1000;
+        usleep(tutorTime);
+
+        pthread_mutex_lock(&seatLock);
+        tutorSum--;
+        SessSum++;
+        printf("Tutor- Student %d has tutored by Tutor %d. Students tutored now = %d. Total sessions tutored = %d\n",id_student,id_tutor-StuNum,tutorSum,SessSum);
+        pthread_mutex_unlock(&seatLock);
+
+        pthread_mutex_lock(&TutorQueueLock);
+        TutorQueue[id_student-1]=id_tutor;
+        pthread_mutex_unlock(&TutorQueueLock);
+    }
+}
+
+void *CoordinatorThread()
+{
+    while(1)
+    {
+        if(Fin==StuNum)
+        {
+            int i;
+            for(i=0; i<tutorNum; i++)
+            {
+                sem_post(&sem_coordinator);
+            }
+
+            printf(" ...... coordinator terminate ........ \n");
+            pthread_exit(NULL);
+        }
+
+        sem_wait(&sem_student);
+
+        pthread_mutex_lock(&seatLock);
+        int i;
+        for(i=0; i<StuNum; i++)
+        {
+            if(newQueue[i]>-1)
+            {
+                priorityQueue[i][0]=StuPriQueue[i];
+                priorityQueue[i][1]=newQueue[i];
+
+                printf("Coordinator- Student %d with priority %d in the queue. \n",StuID[i],StuPriQueue[i]);
+                printf("Waiting students now = %d. Total requests = %d\n",OChair,ReqSum);
+                newQueue[i]=-1;
+
+                sem_post(&sem_coordinator);
+            }
+        }
+        pthread_mutex_unlock(&seatLock);
+    }
+}
+
+
+int main()
+{
+    StuNum=8;
+    EChair=5;
+    tutorNum=4;
+    help=4;
+
+    if( Max_stu_size< StuNum || Max_stu_size < tutorNum )
+    {
+        printf("Maximum student number is: %d;" , Max_stu_size );
+        printf("Maximum tutor number is: %d\n", Max_stu_size);
+        exit(-1);
+    }
+
+    for(int i=0; i<StuNum; i++)
+    {
+        newQueue[i]=-1;
+        TutorQueue[i]=-1;
+        priorityQueue[i][0]=-1;
+        priorityQueue[i][1]=-1;
+        StuPriQueue[i]=0;
+    }
+
+    sem_init(&sem_student,0,0);
+    sem_init(&sem_coordinator,0,0);
+    pthread_mutex_init(&seatLock,NULL);
+    pthread_mutex_init(&queueLock,NULL);
+    pthread_mutex_init(&TutorQueueLock,NULL);
+
+    pthread_t students[StuNum];
+    pthread_t tutors[tutorNum];
+    pthread_t coordinator;
+
+    assert(pthread_create(&coordinator,NULL,CoordinatorThread,NULL)==0);
+
+    for(int i = 0; i < StuNum; i++)
+    {
+        StuID[i] = i + 1;
+        assert(pthread_create(&students[i], NULL, StudentThread, (void*) &StuID[i])==0);
+    }
+
+    for(int i = 0; i < tutorNum; i++)
+    {
+        TutorID[i] = i + StuNum + 1;
+        assert(pthread_create(&tutors[i], NULL, TutorThread, (void*) &TutorID[i])==0);
+    }
+
+    pthread_join(coordinator, NULL);
+
+    for(int i =0; i < StuNum; i++)
+    {
+        pthread_join(students[i],NULL);
+    }
+
+    for(int i =0; i < tutorNum; i++)
+    {
+        pthread_join(tutors[i],NULL);
+    }
+
+    return 0;
+}
